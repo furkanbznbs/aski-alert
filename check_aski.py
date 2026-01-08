@@ -3,7 +3,7 @@ import re
 import requests
 
 URL = "https://www.aski.gov.tr/tr/kesinti.aspx"
-KEYWORD = "pınarbaşı"
+KEYWORD = "piyade"
 
 TOKEN = os.environ["TG_BOT_TOKEN"]
 CHAT_ID = os.environ["TG_CHAT_ID"]
