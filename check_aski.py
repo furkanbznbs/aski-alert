@@ -2,6 +2,7 @@ import os
 import re
 import hashlib
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import requests
 from bs4 import BeautifulSoup
@@ -13,6 +14,7 @@ TOKEN = os.environ["TG_BOT_TOKEN"]
 CHAT_ID = os.environ["TG_CHAT_ID"]
 
 STATE_PATH = "state/pinarbasi_state.txt"
+TR_TZ = ZoneInfo("Europe/Istanbul")
 
 
 def send_telegram(text: str):
@@ -24,8 +26,7 @@ def send_telegram(text: str):
 def read_prev_sig() -> str:
     try:
         with open(STATE_PATH, "r", encoding="utf-8") as f:
-            first = f.readline().strip()
-            return first
+            return f.readline().strip()
     except FileNotFoundError:
         return ""
 
@@ -46,12 +47,6 @@ def clear_state():
 
 
 def extract_context(html: str, keyword: str) -> str:
-    """
-    Sayfa yapısı değişse bile çalışsın diye:
-    - metni çıkarıyoruz
-    - keyword geçen yerin etrafından bir "bağlam" alıyoruz
-    - bunu imzalamak için kullanıyoruz
-    """
     soup = BeautifulSoup(html, "html.parser")
     text = soup.get_text("\n", strip=True)
 
@@ -62,15 +57,61 @@ def extract_context(html: str, keyword: str) -> str:
     if idx == -1:
         return ""
 
-    # Keyword'ün geçtiği yerin çevresinden bir pencere al (tarih/saat satırları da yakalansın diye geniş)
     start = max(0, idx - 800)
     end = min(len(text), idx + 1600)
     window = text[start:end]
 
-    # Çok fazla whitespace'i sadeleştir
     window = re.sub(r"[ \t]+", " ", window)
     window = re.sub(r"\n{2,}", "\n", window)
     return window
+
+
+def parse_dates_times(context: str):
+    dt_matches = re.findall(
+        r"(\d{1,2}\.\d{1,2}\.\d{4}).{0,60}?(\d{1,2}[:.]\d{2})(?:[:.]\d{2})?",
+        context
+    )
+
+    range_match = re.search(
+        r"(\d{1,2}[:.]\d{2})\s*[–-]\s*(\d{1,2}[:.]\d{2})",
+        context
+    )
+
+    def to_time_str(t: str) -> str:
+        return t.replace(".", ":")
+
+    def to_dt(date_str: str, time_str: str) -> datetime:
+        d = datetime.strptime(date_str, "%d.%m.%Y").date()
+        hh, mm = map(int, to_time_str(time_str).split(":"))
+        return datetime(d.year, d.month, d.day, hh, mm, 0, tzinfo=TR_TZ)
+
+    # 2 adet tarih+saat yakaladıysa -> başlangıç/bitiş
+    if len(dt_matches) >= 2:
+        (d1, t1), (d2, t2) = dt_matches[0], dt_matches[1]
+        return to_dt(d1, t1), to_dt(d2, t2)
+
+    # 1 tarih + saat aralığı yakaladıysa -> aynı güne uygula
+    if len(dt_matches) >= 1 and range_match:
+        d1, _t = dt_matches[0]
+        t_start, t_end = range_match.group(1), range_match.group(2)
+        start_dt = to_dt(d1, t_start)
+        end_dt = to_dt(d1, t_end)
+        if end_dt <= start_dt:
+            end_dt = end_dt.replace(day=end_dt.day + 1)
+        return start_dt, end_dt
+
+    return None, None
+
+
+def humanize_delta(minutes: int) -> str:
+    minutes = abs(int(minutes))
+    h = minutes // 60
+    m = minutes % 60
+    if h == 0:
+        return f"{m} dk"
+    if m == 0:
+        return f"{h} saat"
+    return f"{h} saat {m} dk"
 
 
 def main():
@@ -78,30 +119,55 @@ def main():
     r.raise_for_status()
 
     context = extract_context(r.text, KEYWORD)
-
     prev_sig = read_prev_sig()
 
-    # Pınarbaşı yoksa: state'i temizle ki ileride tekrar çıkarsa 1 kere bildirsin
+    # Pınarbaşı yoksa state'i temizle (ileride tekrar çıkarsa yeniden bildirsin)
     if not context:
-        if prev_sig != "":
+        if prev_sig:
             clear_state()
         return
 
-    # Pınarbaşı varsa: bağlamı imzala
+    # İmza hesapla (aynı kayıt devam ediyorsa bildirim yok)
     sig = hashlib.sha256(context.encode("utf-8")).hexdigest()
-
-    # Aynı kayıt devam ediyorsa sessiz kal
     if sig == prev_sig:
         return
 
-    # Yeni kayıt tespit edildi: 1 kere bildir + state güncelle
-    msg = (
-        "🚱 ASKİ Su Kesintisi Uyarısı\n"
-        "📍 Pınarbaşı\n\n"
-        "Pınarbaşı için kesinti kaydı YENİ/DEĞİŞMİŞ görünüyor.\n"
-        f"🔗 {URL}\n\n"
-        "Not: Aynı kayıt durdukça tekrar bildirim gönderilmeyecek."
-    )
+    # Yeni/Değişmiş kayıt: tarih-saat yakala ve mesajı oluştur
+    start_dt, end_dt = parse_dates_times(context)
+    now = datetime.now(TR_TZ)
+
+    if start_dt and end_dt:
+        total_min = int((end_dt - start_dt).total_seconds() // 60)
+
+        if now < start_dt:
+            left_min = int((start_dt - now).total_seconds() // 60)
+            status_line = f"⏳ Kesintiye kalan: {humanize_delta(left_min)}"
+        elif start_dt <= now <= end_dt:
+            passed_min = int((now - start_dt).total_seconds() // 60)
+            status_line = f"🚱 Kesinti başladı: {humanize_delta(passed_min)} önce"
+        else:
+            status_line = "✅ Kesinti bitmiş olabilir (sayfada kayıt kalmış olabilir)."
+
+        msg = (
+            "🚱 ASKİ Su Kesintisi Uyarısı\n"
+            "📍 Pınarbaşı Mahallesi\n\n"
+            f"🗓 Başlangıç: {start_dt.strftime('%d.%m.%Y %H:%M')}\n"
+            f"🗓 Bitiş: {end_dt.strftime('%d.%m.%Y %H:%M')}\n"
+            f"⏱ Süre: {humanize_delta(total_min)}\n"
+            f"{status_line}\n\n"
+            f"🔗 {URL}\n\n"
+            "Not: Aynı kayıt durdukça tekrar bildirim gönderilmeyecek."
+        )
+    else:
+        msg = (
+            "🚱 ASKİ Su Kesintisi Uyarısı\n"
+            "📍 Pınarbaşı Mahallesi\n\n"
+            "Pınarbaşı için kesinti kaydı YENİ/DEĞİŞMİŞ görünüyor.\n"
+            "Tarih/saat otomatik çekilemedi (sayfa formatı farklı olabilir).\n"
+            f"🔗 {URL}\n\n"
+            "Not: Aynı kayıt durdukça tekrar bildirim gönderilmeyecek."
+        )
+
     send_telegram(msg)
     write_state(sig, context)
 
