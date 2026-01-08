@@ -1,4 +1,6 @@
 name: ASKI Pinarbasi Alert
+permissions:
+  contents: write
 
 on:
   schedule:
@@ -18,7 +20,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install requests
+        run: pip install requests beautifulsoup4
 
       - name: Run ASKI checker
         env:
