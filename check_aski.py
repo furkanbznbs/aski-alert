@@ -8,7 +8,7 @@ import requests
 from bs4 import BeautifulSoup
 
 URL = "https://www.aski.gov.tr/tr/kesinti.aspx"
-KEYWORD = "pınarbaşı"
+KEYWORD = "Alsancak"
 
 TOKEN = os.environ["TG_BOT_TOKEN"]
 CHAT_ID = os.environ["TG_CHAT_ID"]
