@@ -8,6 +8,7 @@ import requests
 from bs4 import BeautifulSoup
 
 URL = "https://www.aski.gov.tr/tr/kesinti.aspx"
+DISTRICT_REQUIRED = "sincan"   # sadece bu ilçeyi kabul et
 KEYWORD = "pınarbaşı"
 
 TOKEN = os.environ["TG_BOT_TOKEN"]
@@ -90,14 +91,19 @@ def extract_blocks(html: str, keyword: str) -> list[str]:
     k = keyword.lower()
     blocks = []
     for i, ln in enumerate(lines):
-        if k in ln.lower():
-            # Pınarbaşı geçen satırın etrafından blok al (yakın tarih/saat satırlarını yakalamak için)
-            start = max(0, i - 12)
-            end = min(len(lines), i + 20)
-            block = "\n".join(lines[start:end])
-            # blokları çok çoğaltmamak için normalize
-            block = re.sub(r"[ \t]+", " ", block)
-            blocks.append(block)
+    if k in ln.lower():
+    start = max(0, i - 12)
+    end = min(len(lines), i + 20)
+    block = "\n".join(lines[start:end])
+    block_norm = block.lower()
+
+    # İlçe filtresi: Sincan yoksa bu kaydı alma
+    if DISTRICT_REQUIRED and DISTRICT_REQUIRED not in block_norm:
+        continue
+
+    block = re.sub(r"[ \t]+", " ", block)
+    blocks.append(block)
+
 
     # Aynı bloğun tekrar yakalanmasını azalt
     uniq = list(dict.fromkeys(blocks))
